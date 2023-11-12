@@ -1,1 +1,1 @@
-node --experimental-modules index.mjs
+npm run dev
