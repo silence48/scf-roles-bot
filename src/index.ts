@@ -93,7 +93,7 @@ client.once('ready', async () => {
         fullGuild.id
       );
       for (const role of member.roles.cache.values()) {
-        if (["Pilot", "Path Finder", "Navigator"].includes(role.name)) {
+        if (["SCF Pilot", "SCF Pathfinder", "SCF Navigator"].includes(role.name)) {
           console.log(`Member ${member.user.tag} has role ${role.name}`);
           await db.run(
             'INSERT OR REPLACE INTO user_roles (user_id, role_id, guild_id) VALUES (?, ?, ?)',
@@ -107,7 +107,7 @@ client.once('ready', async () => {
     console.log('Ready!');
   }
 });
-
+git 
 //test the bot.
 client.on('messageCreate', async (message) => {
   if (!message.content.trim()) {
@@ -210,20 +210,20 @@ return thread;
 }
 
 function checkNomineeRoles(nominee: GuildMember): { isPathFinder: boolean; isNavigator: boolean } {
-  const isPathFinder = nominee.roles.cache.some(role => role.name === "Path Finder");
-  const isNavigator = nominee.roles.cache.some(role => role.name === "Navigator");
+  const isPathFinder = nominee.roles.cache.some(role => role.name === "SCF Pathfinder");
+  const isNavigator = nominee.roles.cache.some(role => role.name === "SCF Navigator");
   return { isPathFinder, isNavigator };
 }
 
 function checkNominatorRole(nominator: GuildMember): { canNominateNavigator: boolean; canNominatePilot: boolean } {
-  const canNominateNavigator = nominator.roles.cache.some(role => role.name === "Navigator" || role.name === "Pilot");
-  const canNominatePilot = nominator.roles.cache.some(role => role.name === "Pilot");
+  const canNominateNavigator = nominator.roles.cache.some(role => role.name === "SCF Navigator" || role.name === "SCF Pilot");
+  const canNominatePilot = nominator.roles.cache.some(role => role.name === "SCF Pilot");
   return { canNominateNavigator, canNominatePilot };
 }
 
 function determineNomineeVoteLevel({ isPathFinder, isNavigator }: { isPathFinder: boolean; isNavigator: boolean }): string | null {
-  if (isPathFinder) return "Navigator";
-  if (isNavigator) return "Pilot";
+  if (isPathFinder) return "SCF Navigator";
+  if (isNavigator) return "SCF Pilot";
   return null; // This case handles if a member has neither 'Path Finder' nor 'Navigator' role.
 }
 
@@ -276,7 +276,7 @@ async function processNominateCommand(interaction: CommandInteraction): Promise<
   }
 
   console.log(nominateRole)
-  if (!nominateRole || (nominateRole === "Pilot" && !nominatorRoles.canNominatePilot) || (nominateRole === "Navigator" && !nominatorRoles.canNominateNavigator)) {
+  if (!nominateRole || (nominateRole === "Pilot" && !nominatorRoles.canNominatePilot) || (nominateRole === "SCF Navigator" && !nominatorRoles.canNominateNavigator)) {
     console.log(`Nominator ${nominator.user.tag} does not have permission to nominate ${nominee.user.tag} for role ${nominateRole}`)
     await interaction.reply({ content: `You do not have permission to nominate for the role: ${nominateRole}`, ephemeral: true });
     return;
@@ -357,7 +357,7 @@ async function validateVoterRole(interaction: ButtonInteraction, roleName: strin
     return false;
   }
   const voter: GuildMember = await interaction.guild.members.fetch(interaction.user.id);
-  const allowedVotingRoles = roleName === 'Navigator' ? ['Pilot', 'Navigator'] : ['Pilot'];
+  const allowedVotingRoles = roleName === 'SCF Navigator' ? ['SCF Pilot', 'SCF Navigator'] : ['SCF Pilot'];
   
   if (!memberHasRole(voter, allowedVotingRoles)) {
     await interaction.reply({ content: `You do not have permission to vote for this role.`, ephemeral: true });
@@ -439,7 +439,10 @@ if (timeDiff > fiveDaysInMs) {
   return;
 }
 
-  const requiredVotesForRole = 5;
+  const requiredVotesForRole = 8;
+  // change to 8 or whatever we need
+  const requiredVotesForPilot = 5;
+  const requiredVotesForNavigator = 3;
 // Update the vote count if within the 5-day limit
 if (currentVoteCount < requiredVotesForRole) {
   await interaction.reply({ content: 'Vote recorded but not enough votes to assign the role yet.', ephemeral: true });
