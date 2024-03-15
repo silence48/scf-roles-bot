@@ -107,7 +107,6 @@ client.once('ready', async () => {
     console.log('Ready!');
   }
 });
-git 
 //test the bot.
 client.on('messageCreate', async (message) => {
   if (!message.content.trim()) {
