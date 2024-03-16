@@ -318,21 +318,37 @@ async function getRoleIdByName(guild: Guild, roleName: string): Promise<string |
   return role ? role.id : null;
 }
 
-async function assignRoleToUser(guild: Guild, userId: string, roleName: string): Promise<boolean> {
+async function updateUserRole(guild: Guild, userId: string, roleName: string): Promise<boolean> {
   console.log(`trying to assign role [${roleName}] to userid [${userId}]`)
   try {
+    let previousRoleName = "";
+    if (roleName == "SCF Navigator"){
+      previousRoleName = "SCF Pathfinder"
+    }
+    if (roleName == "SCF Pilot"){
+      previousRoleName = "SCF Navigator"
+    }
+    console.log(`previous role was ${previousRoleName}`)
     const roleId = await getRoleIdByName(guild, roleName);
+    const previousRoleId = await getRoleIdByName(guild, previousRoleName);
+    
     if (!roleId) {
       console.error(`Role ${roleName} not found in guild.`);
       return false;
     }
+    if (!previousRoleId) {
+      console.error(`Role ${previousRoleName} not found in guild.`);
+      return false;
+    }
   
     const member = await guild.members.fetch(userId);
-    await member.roles.add(roleId);
+    await member.roles.add(roleId, `${member.user.tag} has passed the vote to become a ${roleName}`);
     console.log(`Role ${roleName} assigned to user ${member.user.tag}.`);
+    await member.roles.remove(previousRoleId, `${member.user.tag} has passed the vote to become a ${roleName}, and no longer needs the ${previousRoleName} role.`)
+    console.log(`Role ${previousRoleName} has been removed from ${member.user.tag}.`)
     return true;
   } catch (error) {
-    console.error('Error assigning role:', error);
+    console.error('Error assigning or removing role:', error);
     return false;
   }
 }
@@ -426,8 +442,8 @@ const creationTime = new Date(threadData.creation_timestamp);
 const currentTime = new Date();
 const timeDiff = currentTime.getTime() - creationTime.getTime();
 const dayInMs = 24 * 60 * 60 * 1000
-// Check if the current time is beyond the 30-day limit
-if (timeDiff > (30 * dayInMs)) {
+// Check if the current time is beyond the 5-day limit
+if (timeDiff > (5 * dayInMs)) {
   // Close the thread as the voting period has expired
   await thread.setLocked(true);
   await thread.setArchived(true);
@@ -439,7 +455,7 @@ if (timeDiff > (30 * dayInMs)) {
     WHERE thread_id = ?
   `, thread.id);
 
-  await interaction.reply({ content: 'The voting period for this thread has expired and it has been closed.', ephemeral: true });
+  await interaction.reply({ content: 'The voting period for this thread has expired and it has been closed. This user will need to wait at least 30 days before trying again.', ephemeral: false });
   return;
 }
 
@@ -451,7 +467,7 @@ if (timeDiff > (30 * dayInMs)) {
 if (currentVoteCount < requiredVotesForRole) {
   console.log(currentVoteCount + "Current vote count")
   console.log(requiredVotesForRole + "Required votes for role")
-  await interaction.reply({ content: 'Vote recorded but not enough votes to assign the role yet.', ephemeral: true });
+  await interaction.reply({ content: 'Vote recorded but not enough votes to assign the role yet.', ephemeral: false });
   // Increment the vote count in the database
   await db.run(`
     UPDATE voting_threads
@@ -462,14 +478,14 @@ if (currentVoteCount < requiredVotesForRole) {
   return;
 } else {
   // Assign role since the required votes have been reached
-  const assignRoleSuccess = await assignRoleToUser(interaction.guild, nomineeId, roleName);
+  const assignRoleSuccess = await updateUserRole(interaction.guild, nomineeId, roleName);
   if (assignRoleSuccess) {
     // Close the thread after role assignment
     await thread.setLocked(true);
     await thread.setArchived(true);
 
 
-    await interaction.reply({ content: `The vote is complete, and the role ${roleName} has been assigned.`, components: [] });
+    await interaction.reply({ content: `The vote is complete, and the role ${roleName} has been assigned.`, components: [], ephemeral: false });
     
     // Update the outcome in the database
     await db.run(`
@@ -478,7 +494,7 @@ if (currentVoteCount < requiredVotesForRole) {
       WHERE thread_id = ?
     `, thread.id);
   } else {
-    await interaction.reply({ content: 'Unable to assign role', ephemeral: true });
+    await interaction.reply({ content: 'Error: Unable to assign role, contact the admin', ephemeral: false });
   }
 }
 
