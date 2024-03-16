@@ -58,6 +58,8 @@ client.once('ready', async () => {
   const guilds = await client.guilds.fetch();
 
   for (const [guildId, partialGuild] of guilds) {
+    console.log("guild id: " + guildId)
+    console.log('partial guild: ' + partialGuild)
     console.log(`Guild: ${partialGuild.name} (${partialGuild.id})`);
     console.log(`guildId is ${guildId}`)
     const fullGuild = await client.guilds.fetch(guildId);
@@ -178,6 +180,7 @@ async function createVotingThread(
   autoArchiveDuration: 60, // in minutes
   reason: `Nomination for ${nominee.user.username} to become a ${nominateRole}`,
 });
+console.log('the thread is', JSON.stringify(thread))
  // Send an initial message to the thread with voting instructions
  const voteButton = new ButtonBuilder()
  .setCustomId(`vote-yes:${nominee.id}:${nominateRole}`)
@@ -275,13 +278,14 @@ async function processNominateCommand(interaction: CommandInteraction): Promise<
   }
 
   console.log(nominateRole)
-  if (!nominateRole || (nominateRole === "Pilot" && !nominatorRoles.canNominatePilot) || (nominateRole === "SCF Navigator" && !nominatorRoles.canNominateNavigator)) {
+  if (!nominateRole || (nominateRole === "SCF Pilot" && !nominatorRoles.canNominatePilot) || (nominateRole === "SCF Navigator" && !nominatorRoles.canNominateNavigator)) {
     console.log(`Nominator ${nominator.user.tag} does not have permission to nominate ${nominee.user.tag} for role ${nominateRole}`)
     await interaction.reply({ content: `You do not have permission to nominate for the role: ${nominateRole}`, ephemeral: true });
     return;
   }
 
   // Proceed to create the voting thread.
+  console.log("Creating Voting Thread")
   const thread = await createVotingThread(interaction, nominee, nominator, nominateRole);
   if (!thread) {
     // If thread creation failed, the interaction reply is already handled in `createVotingThread`.
@@ -315,6 +319,7 @@ async function getRoleIdByName(guild: Guild, roleName: string): Promise<string |
 }
 
 async function assignRoleToUser(guild: Guild, userId: string, roleName: string): Promise<boolean> {
+  console.log(`trying to assign role [${roleName}] to userid [${userId}]`)
   try {
     const roleId = await getRoleIdByName(guild, roleName);
     if (!roleId) {
@@ -420,9 +425,9 @@ async function updateVoteCountAndCheckRoleAssignment(
 const creationTime = new Date(threadData.creation_timestamp);
 const currentTime = new Date();
 const timeDiff = currentTime.getTime() - creationTime.getTime();
-const fiveDaysInMs = 5 * 24 * 60 * 60 * 1000;
-// Check if the current time is beyond the 5-day limit
-if (timeDiff > fiveDaysInMs) {
+const dayInMs = 24 * 60 * 60 * 1000
+// Check if the current time is beyond the 30-day limit
+if (timeDiff > (30 * dayInMs)) {
   // Close the thread as the voting period has expired
   await thread.setLocked(true);
   await thread.setArchived(true);
@@ -438,12 +443,14 @@ if (timeDiff > fiveDaysInMs) {
   return;
 }
 
-  const requiredVotesForRole = 8;
-  // change to 8 or whatever we need
+  const requiredVotesForRole = 5;
+  // we could also require different votes for each role.
   const requiredVotesForPilot = 5;
   const requiredVotesForNavigator = 3;
 // Update the vote count if within the 5-day limit
 if (currentVoteCount < requiredVotesForRole) {
+  console.log(currentVoteCount + "Current vote count")
+  console.log(requiredVotesForRole + "Required votes for role")
   await interaction.reply({ content: 'Vote recorded but not enough votes to assign the role yet.', ephemeral: true });
   // Increment the vote count in the database
   await db.run(`
@@ -460,6 +467,7 @@ if (currentVoteCount < requiredVotesForRole) {
     // Close the thread after role assignment
     await thread.setLocked(true);
     await thread.setArchived(true);
+
 
     await interaction.reply({ content: `The vote is complete, and the role ${roleName} has been assigned.`, components: [] });
     
