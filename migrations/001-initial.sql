@@ -1,7 +1,8 @@
 -- migrations/001-initial.sql
 CREATE TABLE guilds (
     guild_id TEXT PRIMARY KEY,
-    guild_name TEXT NOT NULL
+    guild_name TEXT NOT NULL,
+    date_added DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE members (
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS user_roles (
     user_id TEXT NOT NULL,
     role_id TEXT NOT NULL,
     guild_id TEXT NOT NULL,
+    role_assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id, role_id),
     FOREIGN KEY (user_id) REFERENCES members(member_id),
     FOREIGN KEY (role_id) REFERENCES roles(role_id)
@@ -45,4 +47,15 @@ CREATE TABLE IF NOT EXISTS votes (
     vote_timestamp DATETIME NOT NULL,
     FOREIGN KEY (thread_id) REFERENCES voting_threads(thread_id),
     FOREIGN KEY (voter_id) REFERENCES members(member_id)
+);
+
+CREATE TABLE IF NOT EXISTS interested_members (
+    member_id TEXT NOT NULL,
+    interested_since DATETIME NOT NULL,
+    interested_role TEXT NOT NULL,
+    reason TEXT,
+    guild_id TEXT NOT NULL,
+    PRIMARY KEY (member_id, interested_role, guild_id),
+    FOREIGN KEY (member_id) REFERENCES members(member_id),
+    FOREIGN KEY (guild_id) REFERENCES guilds(guild_id)
 );

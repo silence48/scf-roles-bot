@@ -168,6 +168,16 @@ await interaction.reply({
 });
 }
 
+async function processGetPromotedCommand(interaction: ChatInputCommandInteraction) {
+  const member = interaction.member as GuildMember;
+    // Validate eligibility and determine target role
+    const { eligible, targetRole, errorMessage } = await checkPromotionEligibility(member);
+    if (!eligible) {
+      await interaction.reply({ content: errorMessage, ephemeral: true });
+      return;
+    }
+}
+
 async function processListMembersCommand(interaction: ChatInputCommandInteraction) {
   const db = await getDb();
   if (interaction.guild) {
@@ -311,27 +321,42 @@ async function processNominateCommand(interaction: CommandInteraction): Promise<
   const nominator = interaction.member as GuildMember; // The member who initiated the command.
   const nominee = interaction.options.getMember('user') as GuildMember; // The member who is being nominated.
 
+  // Prevent self-nomination
+  if (nominator.id === nominee.id) {
+    await interaction.reply({ content: 'You cannot nominate yourself.', ephemeral: true });
+    return;
+  }
+  
   // Perform role checks to ensure the nominator has the right to nominate.
   const nominatorRoles = checkNominatorRole(nominator);
   const nomineeRoles = checkNomineeRoles(nominee);
   console.log(`Nominator ${nominator.user.tag} has roles: ${JSON.stringify(nominatorRoles)}`)
   console.log(`Nominee ${nominee.user.tag} has roles: ${JSON.stringify(nomineeRoles)}`)
-  let nominateRole = determineNomineeVoteLevel(nomineeRoles);
-  if (nominateRole === null) {
+
+  // Determine the target role based on their current role
+  let targetRole = determineNomineeVoteLevel(nomineeRoles);
+  if (targetRole === null) {
     await interaction.reply({ content: `User ${nominee.user.tag} does not have a role that can be nominated.`, ephemeral: true });
     return;
   }
 
-  console.log(nominateRole)
-  if (!nominateRole || (nominateRole === "SCF Pilot" && !nominatorRoles.canNominatePilot) || (nominateRole === "SCF Navigator" && !nominatorRoles.canNominateNavigator)) {
-    console.log(`Nominator ${nominator.user.tag} does not have permission to nominate ${nominee.user.tag} for role ${nominateRole}`)
-    await interaction.reply({ content: `You do not have permission to nominate for the role: ${nominateRole}`, ephemeral: true });
+  // Ensure the nominee does not already have the target role.
+  if (!targetRole || nominee.roles.cache.some(role => role.name === targetRole)) {
+    await interaction.reply({ content: `The user ${nominee.user.tag} already has the role ${targetRole} or cannot be promoted further.`, ephemeral: true });
+    return;
+  }
+
+  // Check if the nominator has the permission to nominate someone for the target role.
+  console.log(targetRole)
+  if (!targetRole || (targetRole === "SCF Pilot" && !nominatorRoles.canNominatePilot) || (targetRole === "SCF Navigator" && !nominatorRoles.canNominateNavigator)) {
+    console.log(`Nominator ${nominator.user.tag} does not have permission to nominate ${nominee.user.tag} for role ${targetRole}`)
+    await interaction.reply({ content: `You do not have permission to nominate for the role: ${targetRole}`, ephemeral: true });
     return;
   }
 
   // Proceed to create the voting thread.
   console.log("Creating Voting Thread")
-  const thread = await createVotingThread(interaction, nominee, nominator, nominateRole);
+  const thread = await createVotingThread(interaction, nominee, nominator, targetRole);
   if (!thread) {
     // If thread creation failed, the interaction reply is already handled in `createVotingThread`.
     return;
@@ -358,6 +383,7 @@ async function handleCommandInteraction(interaction: Interaction) {
   if (commandName === 'getverified') {
     await processGetVerifiedCommand(interaction);
   }
+
 }
 
 
