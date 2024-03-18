@@ -21,6 +21,9 @@ const commands = [
     .setName('nominate')
     .setDescription('Nominate a user for role advancement.')
     .addUserOption(option => option.setName('user').setDescription('The user to nominate').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('getverified')
+    .setDescription('Learn how to get verified.'),
 ].map(command => command.toJSON());
 
 async function syncRoles(guild: Guild) { 
@@ -149,6 +152,22 @@ client.on('interactionCreate', async interaction => {
     await handleButtonInteraction(interaction as ButtonInteraction);
   }
 });
+
+async function processGetVerifiedCommand(interaction: ChatInputCommandInteraction) {
+  // Create the button
+  const getVerifiedButton = new ButtonBuilder()
+  .setLabel('Get Verified')
+  .setStyle(ButtonStyle.Link) // ButtonStyle.Link is used for URL buttons
+  .setURL('https://communityfund.stellar.org/tiers'); // Set the button URL
+// Create an action row to hold the button
+const row = new ActionRowBuilder<ButtonBuilder>().addComponents(getVerifiedButton);
+// Send a message with the button
+await interaction.reply({
+  content: 'Start your SCF journey by getting verified!',
+  components: [row]
+});
+}
+
 async function processListMembersCommand(interaction: ChatInputCommandInteraction) {
   const db = await getDb();
   if (interaction.guild) {
@@ -156,8 +175,34 @@ async function processListMembersCommand(interaction: ChatInputCommandInteractio
       'SELECT username FROM members WHERE guild_id = ?',
       interaction.guild.id
     );
-    const memberList = members.map(m => m.username).join(', ');
-    await interaction.reply({ content: `Members: ${memberList}` });
+
+    const memberChunks = [];
+    let currentChunk = '';
+
+    members.forEach((member, index) => {
+      const nextMemberString = `${member.username}${index < members.length - 1 ? ', ' : ''}`;
+      if (currentChunk.length + nextMemberString.length > 1900) { // Keep some margin for safety
+        memberChunks.push(currentChunk);
+        currentChunk = nextMemberString;
+      } else {
+        currentChunk += nextMemberString;
+      }
+    });
+
+    if (currentChunk) {
+      memberChunks.push(currentChunk); // Push the last chunk
+    }
+
+    // If the list is too long, send multiple messages.
+    if (memberChunks.length > 1) {
+      await interaction.reply({ content: 'Members list is too long, sending in chunks:', ephemeral: true });
+      for (const chunk of memberChunks) {
+        await interaction.followUp({ content: chunk, ephemeral: true });
+      }
+    } else {
+      // If there is only one chunk, send it as a single message.
+      await interaction.reply({ content: `Members: ${memberChunks[0]}`, ephemeral: true });
+    }
   } else {
     await interaction.reply({ content: 'This command can only be used in a server.', ephemeral: true });
   }
@@ -291,7 +336,6 @@ async function processNominateCommand(interaction: CommandInteraction): Promise<
     // If thread creation failed, the interaction reply is already handled in `createVotingThread`.
     return;
   }
-
 }
 
 
@@ -309,6 +353,10 @@ async function handleCommandInteraction(interaction: Interaction) {
   
   if (commandName === 'nominate') {
     await processNominateCommand(interaction);
+  }
+
+  if (commandName === 'getverified') {
+    await processGetVerifiedCommand(interaction);
   }
 }
 
@@ -358,9 +406,7 @@ function memberHasRole(member: GuildMember, allowedRoles: string[]): boolean {
   return member.roles.cache.some(role => allowedRoles.includes(role.name));
 }
 
-
 async function handleButtonInteraction(interaction: ButtonInteraction): Promise<void> {
- 
   const [action, nomineeId, roleName] = interaction.customId.split(':');
   if (action !== 'vote-yes') return; // or handle other actions as needed
 
@@ -388,7 +434,6 @@ async function validateVoterRole(interaction: ButtonInteraction, roleName: strin
 
 async function recordVote(interaction: ButtonInteraction, nomineeId: string, roleName: string): Promise<boolean> {
   const db = await getDb();
-
   const thread = interaction.channel as ThreadChannel;
   const userId = interaction.user.id;
 
@@ -409,7 +454,6 @@ async function recordVote(interaction: ButtonInteraction, nomineeId: string, rol
 `, [thread.id, interaction.user.id, new Date().toISOString()]);
   return true;
 }
-
 
 async function updateVoteCountAndCheckRoleAssignment(
   interaction: ButtonInteraction, 
