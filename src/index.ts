@@ -168,16 +168,6 @@ await interaction.reply({
 });
 }
 
-async function processGetPromotedCommand(interaction: ChatInputCommandInteraction) {
-  const member = interaction.member as GuildMember;
-    // Validate eligibility and determine target role
-    const { eligible, targetRole, errorMessage } = await checkPromotionEligibility(member);
-    if (!eligible) {
-      await interaction.reply({ content: errorMessage, ephemeral: true });
-      return;
-    }
-}
-
 async function processListMembersCommand(interaction: ChatInputCommandInteraction) {
   const db = await getDb();
   if (interaction.guild) {
