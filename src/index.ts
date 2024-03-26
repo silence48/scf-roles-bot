@@ -392,10 +392,15 @@ async function updateUserRole(guild: Guild, userId: string, roleName: string): P
     if (roleName == "SCF Pilot"){
       previousRoleName = "SCF Navigator"
     }
+    const voterRoleName =  "SCF Voter";
     console.log(`previous role was ${previousRoleName}`)
     const roleId = await getRoleIdByName(guild, roleName);
+    const voterRoleId = await getRoleIdByName(guild, voterRoleName);
     const previousRoleId = await getRoleIdByName(guild, previousRoleName);
-    
+    if (!voterRoleId) {
+      console.error(`Role ${voterRoleName} not found in guild.`);
+      return false;
+    }
     if (!roleId) {
       console.error(`Role ${roleName} not found in guild.`);
       return false;
@@ -404,12 +409,20 @@ async function updateUserRole(guild: Guild, userId: string, roleName: string): P
       console.error(`Role ${previousRoleName} not found in guild.`);
       return false;
     }
-  
+
     const member = await guild.members.fetch(userId);
-    await member.roles.add(roleId, `${member.user.tag} has passed the vote to become a ${roleName}`);
-    console.log(`Role ${roleName} assigned to user ${member.user.tag}.`);
+
+    if (previousRoleName == "SCF Pathfinder") {
+      await member.roles.add(voterRoleId, `${member.user.tag} has passed the vote to become a *SCF Voter*`)
+      console.log(`Role ${voterRoleName} assigned to user ${member.user.tag}.`);
+
+    }
     await member.roles.remove(previousRoleId, `${member.user.tag} has passed the vote to become a ${roleName}, and no longer needs the ${previousRoleName} role.`)
     console.log(`Role ${previousRoleName} has been removed from ${member.user.tag}.`)
+
+    await member.roles.add(roleId, `${member.user.tag} has passed the vote to become a ${roleName}`);
+    console.log(`Role ${roleName} assigned to user ${member.user.tag}.`);
+
     return true;
   } catch (error) {
     console.error('Error assigning or removing role:', error);
