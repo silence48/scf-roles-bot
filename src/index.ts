@@ -24,6 +24,9 @@ const commands = [
   new SlashCommandBuilder()
     .setName('getverified')
     .setDescription('Learn how to get verified.'),
+  new SlashCommandBuilder()
+    .setName('updatevote')
+    .setDescription('Update the vote count in the current voting thread.'),
 ].map(command => command.toJSON());
 
 async function syncRoles(guild: Guild) { 
@@ -353,8 +356,31 @@ async function processNominateCommand(interaction: CommandInteraction): Promise<
   }
 }
 
+async function processUpdateVoteCommand(interaction: CommandInteraction) {
+  // Ensure this command is used within a thread
+  if (!interaction.channel || !interaction.channel.isThread()) {
+    await interaction.reply({ content: 'This command can only be used within a voting thread.', ephemeral: true });
+    return;
+  }
 
-async function handleCommandInteraction(interaction: Interaction) {
+  const thread = interaction.channel as ThreadChannel;
+  const db = await getDb();
+  const result = await db.get(`SELECT vote_count FROM voting_threads WHERE thread_id = ?`, thread.id);
+
+  if (!result) {
+    await interaction.reply({ content: 'This thread does not correspond to a valid voting session.', ephemeral: true });
+    return;
+  }
+
+  const currentVoteCount = result.vote_count;
+
+  // Update the thread title with the new vote count
+  await updateThreadVoteCount(thread, currentVoteCount);
+  await interaction.reply({ content: `The vote count has been updated to ${currentVoteCount}.`, ephemeral: true });
+}
+
+
+async function handleCommandInteraction(interaction: CommandInteraction) {
   // Existing logic to handle slash commands
   // Place the slash command handling logic here.
 
@@ -362,18 +388,20 @@ async function handleCommandInteraction(interaction: Interaction) {
 
   const { commandName } = interaction;
 
-  if (commandName === 'listmembers') {
-    await processListMembersCommand(interaction);
-  } 
-  
-  if (commandName === 'nominate') {
-    await processNominateCommand(interaction);
+  switch (commandName) {
+    case 'listmembers':
+      await processListMembersCommand(interaction);
+      break;
+    case 'nominate':
+      await processNominateCommand(interaction);
+      break;
+    case 'getverified':
+      await processGetVerifiedCommand(interaction);
+      break;
+    case 'updatevote':
+      await processUpdateVoteCommand(interaction);
+      break;
   }
-
-  if (commandName === 'getverified') {
-    await processGetVerifiedCommand(interaction);
-  }
-
 }
 
 
@@ -461,6 +489,8 @@ async function validateVoterRole(interaction: ButtonInteraction, roleName: strin
   return true;
 }
 
+
+/*
 async function recordVote(interaction: ButtonInteraction, nomineeId: string, roleName: string): Promise<boolean> {
   const db = await getDb();
   const thread = interaction.channel as ThreadChannel;
@@ -476,6 +506,7 @@ async function recordVote(interaction: ButtonInteraction, nomineeId: string, rol
   }
 
   voteRecord.set(userId, true);
+
   await updateVoteCountAndCheckRoleAssignment(interaction, thread, nomineeId, roleName, voteRecord.size);
   await db.run(`
   INSERT INTO votes (thread_id, voter_id, vote_timestamp)
@@ -483,6 +514,35 @@ async function recordVote(interaction: ButtonInteraction, nomineeId: string, rol
 `, [thread.id, interaction.user.id, new Date().toISOString()]);
   return true;
 }
+*/
+async function recordVote(interaction: ButtonInteraction, nomineeId: string, roleName: string): Promise<boolean> {
+  const db = await getDb();
+  const thread = interaction.channel as ThreadChannel;
+  const userId = interaction.user.id;
+
+  // Fetch all votes for this thread from the database to update voteCounts
+  const dbVotes = await db.all('SELECT voter_id FROM votes WHERE thread_id = ?', [thread.id]);
+  const voteRecord = new Map(dbVotes.map(vote => [vote.voter_id, true]));
+
+  // Update or initialize the voteRecord in voteCounts map
+  voteCounts.set(thread.id, voteRecord);
+
+  // Check if the current user has already voted
+  if (voteRecord.has(userId)) {
+      await interaction.reply({ content: 'You have already voted in this thread.', ephemeral: true });
+      return false;
+  }
+
+  // Record the new vote
+  voteRecord.set(userId, true);
+  await db.run('INSERT INTO votes (thread_id, voter_id, vote_timestamp) VALUES (?, ?, ?)', [thread.id, userId, new Date().toISOString()]);
+
+  // Update vote count in the database and thread title
+  const newVoteCount = voteRecord.size;
+  await updateVoteCountAndCheckRoleAssignment(interaction, thread, nomineeId, roleName, newVoteCount);
+  return true;
+}
+
 
 async function updateVoteCountAndCheckRoleAssignment(
   interaction: ButtonInteraction, 
@@ -521,10 +581,10 @@ if (timeDiff > (5 * dayInMs)) {
   await thread.setLocked(true);
   await thread.setArchived(true);
 
-  // Update the outcome in the database
+  // Update the status in the database
   await db.run(`
     UPDATE voting_threads
-    SET outcome = 'Closed - Voting Period Expired'
+    SET status = 'Closed - Voting Period Expired'
     WHERE thread_id = ?
   `, thread.id);
 
@@ -559,10 +619,10 @@ if (currentVoteCount < requiredVotesForRole) {
     await thread.setLocked(true);
     await thread.setArchived(true);
 
-    // Update the outcome in the database
+    // Update the status in the database
     await db.run(`
       UPDATE voting_threads
-      SET outcome = 'Closed - Role Assigned'
+      SET status = 'Closed - Role Assigned'
       WHERE thread_id = ?
     `, thread.id);
   } else {
