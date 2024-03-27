@@ -27,9 +27,12 @@ const commands = [
   new SlashCommandBuilder()
     .setName('updatevote')
     .setDescription('Update the vote count in the current voting thread.'),
+  new SlashCommandBuilder()
+    .setName('listactivevotes')
+    .setDescription('Lists all active voting threads.'),
 ].map(command => command.toJSON());
 
-async function syncRoles(guild: Guild) { 
+async function syncRoles(guild: Guild) {
   const db = await getDb(); // Your function to get a database connection
   const roles = await guild.roles.fetch();
   console.log(JSON.stringify(roles))
@@ -159,16 +162,16 @@ client.on('interactionCreate', async interaction => {
 async function processGetVerifiedCommand(interaction: ChatInputCommandInteraction) {
   // Create the button
   const getVerifiedButton = new ButtonBuilder()
-  .setLabel('Get Verified')
-  .setStyle(ButtonStyle.Link) // ButtonStyle.Link is used for URL buttons
-  .setURL('https://communityfund.stellar.org/tiers'); // Set the button URL
-// Create an action row to hold the button
-const row = new ActionRowBuilder<ButtonBuilder>().addComponents(getVerifiedButton);
-// Send a message with the button
-await interaction.reply({
-  content: 'Start your SCF journey by getting verified!',
-  components: [row]
-});
+    .setLabel('Get Verified')
+    .setStyle(ButtonStyle.Link) // ButtonStyle.Link is used for URL buttons
+    .setURL('https://communityfund.stellar.org/tiers'); // Set the button URL
+  // Create an action row to hold the button
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(getVerifiedButton);
+  // Send a message with the button
+  await interaction.reply({
+    content: 'Start your SCF journey by getting verified!',
+    components: [row]
+  });
 }
 
 async function processListMembersCommand(interaction: ChatInputCommandInteraction) {
@@ -212,8 +215,8 @@ async function processListMembersCommand(interaction: ChatInputCommandInteractio
 }
 
 async function createVotingThread(
-  interaction: CommandInteraction, 
-  nominee: GuildMember, 
+  interaction: CommandInteraction,
+  nominee: GuildMember,
   nominator: GuildMember,
   nominateRole: string
 ): Promise<ThreadChannel | null> {
@@ -222,41 +225,42 @@ async function createVotingThread(
     await interaction.reply({ content: 'You can only create a voting thread within a server text channel.', ephemeral: true });
     return null;
   }
- // Create a public thread for voting
- const thread = await interaction.channel.threads.create({
-  name: `Nomination: ${nominee.user.username} for ${nominateRole}`,
-  autoArchiveDuration: 60 * 24 * 5, // in minutes
-  reason: `Nomination for ${nominee.user.username} to become a ${nominateRole}`,
-});
-console.log('the thread is', JSON.stringify(thread))
- // Send an initial message to the thread with voting instructions
- const voteButton = new ButtonBuilder()
- .setCustomId(`vote-yes:${nominee.id}:${nominateRole}`)
- .setLabel('Vote Yes')
- .setStyle(ButtonStyle.Success);
+  // Create a public thread for voting
+  const thread = await interaction.channel.threads.create({
+    name: `Nomination: ${nominee.user.username} for ${nominateRole}`,
+    autoArchiveDuration: 60 * 24 * 5, // in minutes, 5 days.
+    reason: `Nomination for ${nominee.user.username} to become a ${nominateRole}`,
+  });
+  console.log('the thread is', JSON.stringify(thread))
+  // Send an initial message to the thread with voting instructions
+  const voteButton = new ButtonBuilder()
+    .setCustomId(`vote-yes:${nominee.id}:${nominateRole}`)
+    .setLabel('Vote Yes')
+    .setStyle(ButtonStyle.Success);
 
-const actionRow = new ActionRowBuilder<ButtonBuilder>().addComponents(voteButton);
+  const actionRow = new ActionRowBuilder<ButtonBuilder>().addComponents(voteButton);
 
-const embed = new EmbedBuilder()
- .setColor(0x0099FF)
- .setTitle(`Nomination for ${nominee.user.username}`)
- .setDescription(`Please cast your vote for ${nominee.displayName} to become a ${nominateRole}.`)
- .setTimestamp();
+  const embed = new EmbedBuilder()
+    .setColor(0x0099FF)
+    .setTitle(`Nomination for ${nominee.user.username}`)
+    .setDescription(`Please cast your vote for ${nominee.displayName} to become a ${nominateRole}.`)
+    .setTimestamp();
 
-await thread.send({
- content: `**Please Vote!*\n <@${nominator.user.id}> has nominated <@${nominee.user.id}> to become a ${nominateRole}. \n Their current SCF statistics are: \n put useful info here`,
- embeds: [embed],
- components: [actionRow],
-});
+  await thread.send({
+    content: `**Please Vote!*\n <@${nominator.user.id}> has nominated <@${nominee.user.id}> to become a ${nominateRole}. \n Their current SCF statistics are: \n put useful info here`,
+    embeds: [embed],
+    components: [actionRow],
+  });
 
-await interaction.reply({ content: `Vote To Promote <@${nominee.user.id}> To ${nominateRole}`, ephemeral: true });
-const db = await getDb();
-//const roleId = await getRoleIdByName(interaction.guild as Guild, nominateRole);
-await db.run(`
-  INSERT INTO voting_threads (thread_id, created_at, nominator_id, nominee_id, role_id, role_name)
-  VALUES (?, ?, ?, ?, (SELECT role_id FROM roles WHERE role_name = ?), ?)
-`, [thread.id, new Date().toISOString(), nominator.id, nominee.id,nominateRole, nominateRole ]);
-return thread;
+  await interaction.reply({ content: `Vote To Promote <@${nominee.user.id}> To ${nominateRole}`, ephemeral: true });
+  const db = await getDb();
+  //const roleId = await getRoleIdByName(interaction.guild as Guild, nominateRole);
+
+  await db.run(`
+  INSERT INTO voting_threads (thread_id, created_at, nominator_id, nominee_id, role_id, role_name, status)
+  VALUES (?, ?, ?, ?, (SELECT role_id FROM roles WHERE role_name = ?), ?, ?)
+`, [thread.id, new Date().toISOString(), nominator.id, nominee.id, nominateRole, nominateRole, "OPEN"]);
+  return thread;
 }
 
 function checkNomineeRoles(nominee: GuildMember): { isPathFinder: boolean; isNavigator: boolean } {
@@ -319,7 +323,7 @@ async function processNominateCommand(interaction: CommandInteraction): Promise<
     await interaction.reply({ content: 'You cannot nominate yourself.', ephemeral: true });
     return;
   }
-  
+
   // Perform role checks to ensure the nominator has the right to nominate.
   const nominatorRoles = checkNominatorRole(nominator);
   const nomineeRoles = checkNomineeRoles(nominee);
@@ -401,9 +405,118 @@ async function handleCommandInteraction(interaction: CommandInteraction) {
     case 'updatevote':
       await processUpdateVoteCommand(interaction);
       break;
+    case 'listactivevotes':
+      await processListActiveVotesCommand(interaction);
+      break;
   }
 }
+/*
+async function processListActiveVotesCommand(interaction: CommandInteraction): Promise<void> {
+  if (!interaction.guild) {
+    await interaction.reply({ content: "This command can only be used within a server.", ephemeral: true });
+    return;
+  }
+  const guild = interaction.guild; // Assign to a constant immediately after the check
 
+  const db = await getDb();
+  // Fetch active voting threads from the database.
+  const activeVotes = await db.all(`
+          SELECT thread_id, role_name, nominee_id, nominator_id, vote_count, datetime(created_at, 'localtime') as created_at
+          FROM voting_threads 
+          WHERE (status IS NULL OR status = '' OR status = 'OPEN') 
+    `);
+
+  // Fetch active threads from Discord to filter out non-existent or closed threads
+  const activeThreads = await interaction.guild.channels.fetchActiveThreads();
+  const activeThreadIDs = new Set(activeThreads.threads.map(thread => thread.id));
+
+  // Filter out votes for threads that are no longer active or do not exist
+  const filteredActiveVotes = activeVotes.filter(vote => activeThreadIDs.has(vote.thread_id));
+
+  if (filteredActiveVotes.length === 0) {
+    await interaction.reply({ content: "No active votes found.", ephemeral: true });
+    return;
+  }
+
+  // Initialize markdown tables for Navigator and Pilot nominations
+  let navigatorTable = "| Date | Nominee | Nominator | Votes | Link |\n|------|---------|-----------|-------|------|\n";
+  let pilotTable = "| Date | Nominee | Nominator | Votes | Link |\n|------|---------|-----------|-------|------|\n";
+
+  filteredActiveVotes.forEach(vote => {
+    const threadLink = `[Vote Here](https://discord.com/channels/${guild.id}/${vote.thread_id})`;
+    const row = `| ${vote.created_at.split(' ')[0]} | <@${vote.nominee_id}> | <@${vote.nominator_id}> | ${vote.vote_count} | ${threadLink} |\n`;
+
+    if (vote.role_name === "SCF Navigator") {
+      navigatorTable += row;
+    } else if (vote.role_name === "SCF Pilot") {
+      pilotTable += row;
+    }
+  });
+
+  let replyContent = "**Active Voting Threads:**\n\n**Navigator Nominations:**\n" + navigatorTable + "\n**Pilot Nominations:**\n" + pilotTable;
+  await interaction.reply({ content: replyContent, ephemeral: false });
+}
+*/
+async function processListActiveVotesCommand(interaction: CommandInteraction): Promise<void> {
+  if (!interaction.guild) {
+    await interaction.reply({ content: "This command can only be used within a server.", ephemeral: true });
+    return;
+  }
+  const guild = interaction.guild; // Assign to a constant immediately after the check
+
+  const db = await getDb();
+  const activeVotes = await db.all(`
+    SELECT thread_id, role_name, nominee_id, nominator_id, vote_count, datetime(created_at, 'localtime') as created_at
+    FROM voting_threads
+    WHERE (status IS NULL OR status = '' OR status = 'OPEN')
+  `);
+
+  const activeThreads = await interaction.guild.channels.fetchActiveThreads();
+  const activeThreadIDs = new Set(activeThreads.threads.map(thread => thread.id));
+  const filteredActiveVotes = activeVotes.filter(vote => activeThreadIDs.has(vote.thread_id));
+
+  if (filteredActiveVotes.length === 0) {
+    await interaction.reply({ content: "No active votes found.", ephemeral: true });
+    return;
+  }
+
+  const navigatorVotes = filteredActiveVotes.filter(vote => vote.role_name === "SCF Navigator");
+  const pilotVotes = filteredActiveVotes.filter(vote => vote.role_name === "SCF Pilot");
+
+  const createAndSendEmbeds = async (title: string, votes: typeof filteredActiveVotes) => {
+    let embed = new EmbedBuilder().setTitle(title).setColor(0x0099FF);
+    let embedFieldsCount = 0;
+
+    for (const vote of votes) {
+      const threadLink = `[Vote Here](https://discord.com/channels/${guild.id}/${vote.thread_id})`;
+      const fieldValue = `Date: ${vote.created_at.split(' ')[0]}\nNominee: <@${vote.nominee_id}>\nNominator: <@${vote.nominator_id}>\nVotes: ${vote.vote_count}\nLink: ${threadLink}`;
+
+      if (embedFieldsCount + 1 > 25) { // Discord's embed field limit
+        await interaction.followUp({ embeds: [embed], ephemeral: false });
+        embed = new EmbedBuilder().setTitle(`${title} (cont.)`).setColor(0x0099FF);
+        embedFieldsCount = 0;
+      }
+
+      embed.addFields({ name: "Nomination", value: fieldValue, inline: true });
+      embedFieldsCount++;
+    }
+
+    if (embedFieldsCount > 0) {
+      await interaction.followUp({ embeds: [embed], ephemeral: false });
+    }
+  };
+
+  // Initially reply to confirm command reception and indicate processing
+  await interaction.reply({ content: "Processing active votes...", ephemeral: true });
+
+  // Separate handling to ensure the initial reply is sent before follow-ups
+  if (navigatorVotes.length > 0) {
+    await createAndSendEmbeds("Navigator Nominations", navigatorVotes);
+  }
+  if (pilotVotes.length > 0) {
+    await createAndSendEmbeds("Pilot Nominations", pilotVotes);
+  }
+}
 
 async function getRoleIdByName(guild: Guild, roleName: string): Promise<string | null> {
   const role = guild.roles.cache.find(r => r.name === roleName);
@@ -414,13 +527,13 @@ async function updateUserRole(guild: Guild, userId: string, roleName: string): P
   console.log(`trying to assign role [${roleName}] to userid [${userId}]`)
   try {
     let previousRoleName = "";
-    if (roleName == "SCF Navigator"){
+    if (roleName == "SCF Navigator") {
       previousRoleName = "SCF Pathfinder"
     }
-    if (roleName == "SCF Pilot"){
+    if (roleName == "SCF Pilot") {
       previousRoleName = "SCF Navigator"
     }
-    const voterRoleName =  "SCF Voter";
+    const voterRoleName = "SCF Voter";
     console.log(`previous role was ${previousRoleName}`)
     const roleId = await getRoleIdByName(guild, roleName);
     const voterRoleId = await getRoleIdByName(guild, voterRoleName);
@@ -470,7 +583,7 @@ async function handleButtonInteraction(interaction: ButtonInteraction): Promise<
   if (!(await validateVoterRole(interaction, roleName))) return;
 
   if (await recordVote(interaction, nomineeId, roleName)) {
-   // await interaction.({ content: 'Your vote has been recorded!', ephemeral: true });
+    // await interaction.({ content: 'Your vote has been recorded!', ephemeral: true });
   }
 }
 
@@ -481,7 +594,7 @@ async function validateVoterRole(interaction: ButtonInteraction, roleName: strin
   }
   const voter: GuildMember = await interaction.guild.members.fetch(interaction.user.id);
   const allowedVotingRoles = roleName === 'SCF Navigator' ? ['SCF Pilot', 'SCF Navigator'] : ['SCF Pilot'];
-  
+
   if (!memberHasRole(voter, allowedVotingRoles)) {
     await interaction.reply({ content: `You do not have permission to vote for this role.`, ephemeral: true });
     return false;
@@ -489,32 +602,6 @@ async function validateVoterRole(interaction: ButtonInteraction, roleName: strin
   return true;
 }
 
-
-/*
-async function recordVote(interaction: ButtonInteraction, nomineeId: string, roleName: string): Promise<boolean> {
-  const db = await getDb();
-  const thread = interaction.channel as ThreadChannel;
-  const userId = interaction.user.id;
-
-  // Initialize vote record if not present
-  const voteRecord = voteCounts.get(thread.id) ?? new Map<string, boolean>();
-  voteCounts.set(thread.id, voteRecord);
-
-  if (voteRecord.has(userId)) {
-    await interaction.reply({ content: 'You have already voted in this thread.', ephemeral: true });
-    return false;
-  }
-
-  voteRecord.set(userId, true);
-
-  await updateVoteCountAndCheckRoleAssignment(interaction, thread, nomineeId, roleName, voteRecord.size);
-  await db.run(`
-  INSERT INTO votes (thread_id, voter_id, vote_timestamp)
-  VALUES (?, ?, ?)
-`, [thread.id, interaction.user.id, new Date().toISOString()]);
-  return true;
-}
-*/
 async function recordVote(interaction: ButtonInteraction, nomineeId: string, roleName: string): Promise<boolean> {
   const db = await getDb();
   const thread = interaction.channel as ThreadChannel;
@@ -529,8 +616,8 @@ async function recordVote(interaction: ButtonInteraction, nomineeId: string, rol
 
   // Check if the current user has already voted
   if (voteRecord.has(userId)) {
-      await interaction.reply({ content: 'You have already voted in this thread.', ephemeral: true });
-      return false;
+    await interaction.reply({ content: 'You have already voted in this thread.', ephemeral: true });
+    return false;
   }
 
   // Record the new vote
@@ -545,10 +632,10 @@ async function recordVote(interaction: ButtonInteraction, nomineeId: string, rol
 
 
 async function updateVoteCountAndCheckRoleAssignment(
-  interaction: ButtonInteraction, 
-  thread: ThreadChannel, 
-  nomineeId: string, 
-  roleName: string, 
+  interaction: ButtonInteraction,
+  thread: ThreadChannel,
+  nomineeId: string,
+  roleName: string,
   currentVoteCount: number
 ): Promise<void> {
   const db = await getDb();
@@ -570,65 +657,66 @@ async function updateVoteCountAndCheckRoleAssignment(
     await interaction.reply({ content: 'The voting thread data could not be found in the database.', ephemeral: true });
     return;
   }
-// Calculate the time difference from now to the thread's creation time
-const creationTime = new Date(threadData.creation_timestamp);
-const currentTime = new Date();
-const timeDiff = currentTime.getTime() - creationTime.getTime();
-const dayInMs = 24 * 60 * 60 * 1000
-// Check if the current time is beyond the 5-day limit
-if (timeDiff > (5 * dayInMs)) {
-  // Close the thread as the voting period has expired
-  await thread.setLocked(true);
-  await thread.setArchived(true);
-
-  // Update the status in the database
-  await db.run(`
-    UPDATE voting_threads
-    SET status = 'Closed - Voting Period Expired'
-    WHERE thread_id = ?
-  `, thread.id);
-
-  await interaction.reply({ content: 'The voting period for this thread has expired and it has been closed. This user will need to wait at least 30 days before trying again.', ephemeral: false });
-  return;
-}
-
-  const requiredVotesForRole = 5;
-  // we could also require different votes for each role.
-  const requiredVotesForPilot = 5;
-  const requiredVotesForNavigator = 3;
-// Update the vote count if within the 5-day limit
-if (currentVoteCount < requiredVotesForRole) {
-  console.log(currentVoteCount + "Current vote count")
-  console.log(requiredVotesForRole + "Required votes for role")
-  await interaction.reply({ content: 'Vote recorded but not enough votes to assign the role yet.', ephemeral: false });
-  // Increment the vote count in the database
-  await db.run(`
-    UPDATE voting_threads
-    SET vote_count = vote_count + 1
-    WHERE thread_id = ?
-  `, thread.id);
-  await updateThreadVoteCount(thread, currentVoteCount); // Reflect the new vote count in the thread's name
-  return;
-} else {
-  // Assign role since the required votes have been reached
-  const assignRoleSuccess = await updateUserRole(interaction.guild, nomineeId, roleName);
-  if (assignRoleSuccess) {
-    // Close the thread after role assignment
-    await interaction.reply({ content: `The vote is complete, and the role ${roleName} has been assigned.`, components: [], ephemeral: false });
-
+  // Calculate the time difference from now to the thread's creation time
+  const creationTime = new Date(threadData.creation_timestamp);
+  const currentTime = new Date();
+  const timeDiff = currentTime.getTime() - creationTime.getTime();
+  const dayInMs = 24 * 60 * 60 * 1000
+  // Check if the current time is beyond the 5-day limit
+  if (timeDiff > (5 * dayInMs)) {
+    // Close the thread as the voting period has expired
     await thread.setLocked(true);
     await thread.setArchived(true);
 
     // Update the status in the database
     await db.run(`
+    UPDATE voting_threads
+    SET status = 'Closed - Voting Period Expired'
+    WHERE thread_id = ?
+  `, thread.id);
+
+
+    await interaction.reply({ content: 'The voting period for this thread has expired and it has been closed. This user will need to wait at least 30 days before trying again.', ephemeral: false });
+    return;
+  }
+
+  const requiredVotesForRole = 5;
+  // we could also require different votes for each role.
+  const requiredVotesForPilot = 5;
+  const requiredVotesForNavigator = 3;
+  // Update the vote count if within the 5-day limit
+  if (currentVoteCount < requiredVotesForRole) {
+    console.log(currentVoteCount + "Current vote count")
+    console.log(requiredVotesForRole + "Required votes for role")
+    await interaction.reply({ content: 'Vote recorded but not enough votes to assign the role yet.', ephemeral: false });
+    // Increment the vote count in the database
+    await db.run(`
+    UPDATE voting_threads
+    SET vote_count = vote_count + 1
+    WHERE thread_id = ?
+  `, thread.id);
+    await updateThreadVoteCount(thread, currentVoteCount); // Reflect the new vote count in the thread's name
+    return;
+  } else {
+    // Assign role since the required votes have been reached
+    const assignRoleSuccess = await updateUserRole(interaction.guild, nomineeId, roleName);
+    if (assignRoleSuccess) {
+      // Close the thread after role assignment
+      await interaction.reply({ content: `The vote is complete, and the role ${roleName} has been assigned.`, components: [], ephemeral: false });
+
+      await thread.setLocked(true);
+      await thread.setArchived(true);
+
+      // Update the status in the database
+      await db.run(`
       UPDATE voting_threads
       SET status = 'Closed - Role Assigned'
       WHERE thread_id = ?
     `, thread.id);
-  } else {
-    await interaction.reply({ content: 'Error: Unable to assign role, contact the admin', ephemeral: false });
+    } else {
+      await interaction.reply({ content: 'Error: Unable to assign role, contact the admin', ephemeral: false });
+    }
   }
-}
 
 }
 
