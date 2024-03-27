@@ -222,7 +222,7 @@ async function createVotingThread(
  // Create a public thread for voting
  const thread = await interaction.channel.threads.create({
   name: `Nomination: ${nominee.user.username} for ${nominateRole}`,
-  autoArchiveDuration: 60, // in minutes
+  autoArchiveDuration: 60 * 24 * 5, // in minutes
   reason: `Nomination for ${nominee.user.username} to become a ${nominateRole}`,
 });
 console.log('the thread is', JSON.stringify(thread))
@@ -554,12 +554,11 @@ if (currentVoteCount < requiredVotesForRole) {
   const assignRoleSuccess = await updateUserRole(interaction.guild, nomineeId, roleName);
   if (assignRoleSuccess) {
     // Close the thread after role assignment
+    await interaction.reply({ content: `The vote is complete, and the role ${roleName} has been assigned.`, components: [], ephemeral: false });
+
     await thread.setLocked(true);
     await thread.setArchived(true);
 
-
-    await interaction.reply({ content: `The vote is complete, and the role ${roleName} has been assigned.`, components: [], ephemeral: false });
-    
     // Update the outcome in the database
     await db.run(`
       UPDATE voting_threads
