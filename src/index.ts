@@ -410,53 +410,7 @@ async function handleCommandInteraction(interaction: CommandInteraction) {
       break;
   }
 }
-/*
-async function processListActiveVotesCommand(interaction: CommandInteraction): Promise<void> {
-  if (!interaction.guild) {
-    await interaction.reply({ content: "This command can only be used within a server.", ephemeral: true });
-    return;
-  }
-  const guild = interaction.guild; // Assign to a constant immediately after the check
 
-  const db = await getDb();
-  // Fetch active voting threads from the database.
-  const activeVotes = await db.all(`
-          SELECT thread_id, role_name, nominee_id, nominator_id, vote_count, datetime(created_at, 'localtime') as created_at
-          FROM voting_threads 
-          WHERE (status IS NULL OR status = '' OR status = 'OPEN') 
-    `);
-
-  // Fetch active threads from Discord to filter out non-existent or closed threads
-  const activeThreads = await interaction.guild.channels.fetchActiveThreads();
-  const activeThreadIDs = new Set(activeThreads.threads.map(thread => thread.id));
-
-  // Filter out votes for threads that are no longer active or do not exist
-  const filteredActiveVotes = activeVotes.filter(vote => activeThreadIDs.has(vote.thread_id));
-
-  if (filteredActiveVotes.length === 0) {
-    await interaction.reply({ content: "No active votes found.", ephemeral: true });
-    return;
-  }
-
-  // Initialize markdown tables for Navigator and Pilot nominations
-  let navigatorTable = "| Date | Nominee | Nominator | Votes | Link |\n|------|---------|-----------|-------|------|\n";
-  let pilotTable = "| Date | Nominee | Nominator | Votes | Link |\n|------|---------|-----------|-------|------|\n";
-
-  filteredActiveVotes.forEach(vote => {
-    const threadLink = `[Vote Here](https://discord.com/channels/${guild.id}/${vote.thread_id})`;
-    const row = `| ${vote.created_at.split(' ')[0]} | <@${vote.nominee_id}> | <@${vote.nominator_id}> | ${vote.vote_count} | ${threadLink} |\n`;
-
-    if (vote.role_name === "SCF Navigator") {
-      navigatorTable += row;
-    } else if (vote.role_name === "SCF Pilot") {
-      pilotTable += row;
-    }
-  });
-
-  let replyContent = "**Active Voting Threads:**\n\n**Navigator Nominations:**\n" + navigatorTable + "\n**Pilot Nominations:**\n" + pilotTable;
-  await interaction.reply({ content: replyContent, ephemeral: false });
-}
-*/
 async function processListActiveVotesCommand(interaction: CommandInteraction): Promise<void> {
   if (!interaction.guild) {
     await interaction.reply({ content: "This command can only be used within a server.", ephemeral: true });
@@ -671,7 +625,7 @@ async function updateVoteCountAndCheckRoleAssignment(
     // Update the status in the database
     await db.run(`
     UPDATE voting_threads
-    SET status = 'Closed - Voting Period Expired'
+    SET status = 'CLOSED'
     WHERE thread_id = ?
   `, thread.id);
 
@@ -710,7 +664,7 @@ async function updateVoteCountAndCheckRoleAssignment(
       // Update the status in the database
       await db.run(`
       UPDATE voting_threads
-      SET status = 'Closed - Role Assigned'
+      SET status = 'CLOSED'
       WHERE thread_id = ?
     `, thread.id);
     } else {
