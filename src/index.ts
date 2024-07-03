@@ -1,8 +1,17 @@
 // index.ts
 import dotenv from 'dotenv';
 dotenv.config();
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, Interaction, Message, SlashCommandBuilder, ChannelType, REST, Routes, GuildMember, InteractionType, TextChannel, ThreadChannel, ChatInputCommandInteraction, ButtonInteraction, CommandInteraction, Guild } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, Interaction, Message, SlashCommandBuilder, ChannelType, REST, Routes, GuildMember, InteractionType, TextChannel, ThreadChannel, ChatInputCommandInteraction, ButtonInteraction, CommandInteraction, Guild, DiscordAPIError } from 'discord.js';
 import { getDb } from './db';
+import express, { Request, Response } from 'express';
+import bodyParser from 'body-parser';
+let ADMIN_USER: string
+if (process.env.ADMIN_USER_ID) {
+  ADMIN_USER = process.env.ADMIN_USER_ID
+} else {
+  ADMIN_USER = '248918075922055168'
+}
+let botIsLoggedIn = false;
 
 if (typeof process.env.DISCORD_BOT_TOKEN !== 'string') {
   console.error("No bot token found in environment variables. Please set DISCORD_BOT_TOKEN.");
@@ -35,16 +44,126 @@ const commands = [
 async function syncRoles(guild: Guild) {
   const db = await getDb(); // Your function to get a database connection
   const roles = await guild.roles.fetch();
-  console.log(JSON.stringify(roles))
+  logger("Roles are being fetched")
   // Loop through roles and add/update each in the database
   roles.forEach(async (role) => {
-    await db.run(`
-      INSERT INTO roles (role_id, role_name, guild_id)
-      VALUES (?, ?, ?)
-      ON CONFLICT(role_id) 
-      DO UPDATE SET role_name = EXCLUDED.role_name;
-    `, [role.id, role.name, guild.id]);
+    const existingRole = await db.get('SELECT role_id, role_name FROM roles WHERE role_id = ?', [role.id]);
+
+    if (!existingRole || existingRole.role_name !== role.name) {
+      await db.run(`
+        INSERT INTO roles (role_id, role_name, guild_id)
+        VALUES (?, ?, ?)
+        ON CONFLICT(role_id)
+        DO UPDATE SET role_name = EXCLUDED.role_name;
+      `, [role.id, role.name, guild.id]);
+    }
   });
+}
+
+// Helper function to split inserts into batches
+const executeBatch = async (statement: string, inserts: any[], batchSize: number, variablesPerRow: number) => {
+  const db = await getDb();
+  logger('processing Database Batch')
+  logger(`inserting ${inserts.length} records using ${statement}`)
+  for (let i = 0; i < inserts.length; i += batchSize) {
+    const batch = inserts.slice(i, i + batchSize);
+    const values = batch.map(() => `(${new Array(variablesPerRow).fill('?').join(', ')})`).join(', ');
+    await db.run(statement + values, batch.flat());
+  }
+};
+
+async function getMemberRoles(member: GuildMember) {
+  return Array.from(member.roles.cache.values())
+}
+
+async function syncMembers(guild: Guild) {
+  const db = await getDb();
+  const members = await guild.members.fetch();
+  const roleCounts: { [key: string]: number } = {};
+  // Collect all SQL statements in these arrays
+  const memberInserts: any[] = [];
+  const userRoleInserts: any[] = [];
+  const scfTierRoles = ["SCF Verified", "SCF Pathfinder", "SCF Navigator", "SCF Pilot"];
+
+  const memberPromises = members.map(async member => {
+    console.log(`Member: ${member.user.tag} (${member.id})`)
+
+    // Check if the member has more than one SCF role and fix it if necessary
+    const currentRoles = member.roles.cache.filter(role => scfTierRoles.includes(role.name));
+    if (currentRoles.size > 1 && guild.id === "897514728459468821") { // only do this for the developers server and not the test server.
+      logger(`${member.user.tag} has more than one scf tier role in guild ${guild.name}`)
+      await fixUserRoles(member);
+    }
+
+    const existingMember = await db.get('SELECT guild_id, username, discriminator FROM members WHERE member_id = ?', member.id);
+
+    if (existingMember) {
+      const currentGuildIds = existingMember.guild_id.split(',');
+      if (!currentGuildIds.includes(guild.id)) {
+        currentGuildIds.push(guild.id);
+      }
+      const updatedGuildIds = currentGuildIds.join(',');
+
+      if (existingMember.username !== member.user.username || existingMember.discriminator !== member.user.discriminator || existingMember.guild_id !== updatedGuildIds) {
+        // Collect member update statement
+        memberInserts.push([
+          member.id,
+          member.user.username,
+          member.user.discriminator,
+          updatedGuildIds
+        ]);
+      }
+    } else {
+      // Collect member insert statement
+      memberInserts.push([
+        member.id,
+        member.user.username,
+        member.user.discriminator,
+        guild.id
+      ]);
+    }
+
+    const rolePromises = Array.from(member.roles.cache.values()).map(async role => {
+      if (role.name.startsWith('SCF')) {
+        if (!roleCounts[role.name]) {
+          roleCounts[role.name] = 0;
+        }
+        roleCounts[role.name] += 1;
+        console.log(`Incremented count for role: ${role.name}, new count: ${roleCounts[role.name]}`);
+        const existingUserRole = await db.get('SELECT role_assigned_at FROM user_roles WHERE user_id = ? AND role_id = ? AND guild_id = ?', [member.id, role.id, guild.id]);
+
+        if (!existingUserRole) {
+          // Collect user role insert statement
+          userRoleInserts.push([
+            member.id,
+            role.id,
+            guild.id,
+            new Date().toISOString() // Add the timestamp here
+          ]);
+        }
+      }
+    });
+    await Promise.all(rolePromises);
+  });
+  await Promise.all(memberPromises);
+  // Batch insert members
+  if (memberInserts.length > 0) {
+    const memberInsertStatement = 'INSERT OR REPLACE INTO members (member_id, username, discriminator, guild_id) VALUES ';
+    const maxVariables = 999; // SQLite variable limit
+    const batchSize = Math.floor(maxVariables / 4);// 4 variables per row
+    await executeBatch(memberInsertStatement, memberInserts, batchSize, 4);
+  }
+
+  // Batch insert user roles
+  if (userRoleInserts.length > 0) {
+    const userRoleInsertStatement = 'INSERT INTO user_roles (user_id, role_id, guild_id, role_assigned_at) VALUES ';
+    const maxVariables = 999; // SQLite variable limit
+    const batchSize = Math.floor(maxVariables / 4);// 3 variables per row + CURRENT_TIMESTAMP
+    await executeBatch(userRoleInsertStatement, userRoleInserts, batchSize, 4);
+  }
+
+  logger(`Processed roles, initial counts:`);
+  logger(JSON.stringify(roleCounts));
 }
 
 const rest = new REST({ version: '10' }).setToken(botToken);
@@ -58,34 +177,36 @@ client.once('ready', async () => {
     console.error('Client is not ready, or user information is unavailable.');
     return;
   }
+  botIsLoggedIn = true;
   const clientId = client.user.id as string; // You need to replace this with your actual client ID
-
-  console.log(`Logged in as ${client.user?.tag}! clientId is ${client.user?.id}!}`);
+  logger(`Logged in as ${client.user?.tag}! clientId is ${client.user?.id}!}`)
 
   const db = await getDb();
 
   const guilds = await client.guilds.fetch();
 
   for (const [guildId, partialGuild] of guilds) {
-    console.log("guild id: " + guildId)
-    console.log('partial guild: ' + partialGuild)
-    console.log(`Guild: ${partialGuild.name} (${partialGuild.id})`);
-    console.log(`guildId is ${guildId}`)
     const fullGuild = await client.guilds.fetch(guildId);
 
-    console.log(`Guild: ${fullGuild.name} (${fullGuild.id})`);
+    let logmsg = `guild id: ${guildId}\n
+    partial Guild: ${partialGuild.name} (${partialGuild.id})\n
+    guildId: ${guildId}\n
+    fullGuild: ${fullGuild.name} (${fullGuild.id})`;
+    logger(logmsg);
     await syncRoles(fullGuild);
+
     //register and update commands:
     try {
-      console.log('Started refreshing application (/) commands.');
+      logger('Started refreshing application (/) commands.')
 
       await rest.put(
         Routes.applicationGuildCommands(clientId, fullGuild.id),
         { body: commands },
       );
 
-      console.log('Successfully reloaded application (/) commands.');
+      logger('Successfully reloaded application (/) commands.');
     } catch (error) {
+      logger(`ERROR! ${error}`)
       console.error(error);
     }
     //write to the db
@@ -93,31 +214,103 @@ client.once('ready', async () => {
 
     // Fetch members for each guild
     const members = await fullGuild.members.fetch();
-    console.log(`Fetched ${members.size} members for guild ${fullGuild.name}`);
-    members.forEach(async member => {
-      console.log(`Member: ${member.user.tag} (${member.id})`);
+    logger(`Fetched ${members.size} members for guild ${fullGuild.name}`);
+    await syncMembers(fullGuild);
 
-      await db.run('INSERT OR REPLACE INTO members (member_id, username, discriminator, guild_id) VALUES (?, ?, ?, ?)',
-        member.id,
-        member.user.username,
-        member.user.discriminator,
-        fullGuild.id
-      );
-      for (const role of member.roles.cache.values()) {
-        if (["SCF Pilot", "SCF Pathfinder", "SCF Navigator"].includes(role.name)) {
-          console.log(`Member ${member.user.tag} has role ${role.name}`);
-          await db.run(
-            'INSERT OR REPLACE INTO user_roles (user_id, role_id, guild_id) VALUES (?, ?, ?)',
-            member.id,
-            role.id,
-            fullGuild.id
-          );
-        }
-      }
-    });
-    console.log('Ready!');
+    logger(`BOT IS Ready!`);
   }
 });
+
+// Express server setup
+const app = express();
+const PORT = process.env.BOT_API_PORT || 3939;
+
+app.use(bodyParser.json());
+
+app.post('/grantRole', async (req: Request, res: Response) => {
+  console.log('Received an API request with body:', req.body);
+
+  const { guildId, userId, roleName, auth } = req.body;
+
+  if (!guildId || !userId || !roleName || !auth) {
+    console.log('Missing required fields in request');
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const db = await getDb();
+
+  // Simple authentication
+  if (auth !== process.env.BOT_API_KEY) {
+    console.log('Unauthorized attempt with auth:', auth);
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const guild = await client.guilds.fetch(guildId);
+    console.log('Fetched guild:', guild.name);
+
+    let member;
+    try {
+      member = await guild.members.fetch(userId);
+    } catch (error) {
+      if (error instanceof DiscordAPIError && error.code === 10007) { // DiscordAPIError code for "Unknown Member"
+        console.log(`User with ID ${userId} not found in guild ${guild.name}.`);
+        return res.status(404).json({ error: 'User not found in the guild.' });
+      } else {
+        throw error;
+      }
+    }
+    console.log('Fetched member:', member.user.tag);
+
+    const existingRoles = await db.all('SELECT role_id FROM user_roles WHERE user_id = ?', [userId]);
+    console.log('Existing roles in DB for member:', existingRoles);
+    
+    // Check if the user already has a higher role
+    let higherRoles = ["SCF Navigator", "SCF Pilot"];
+    if (roleName === "SCF Verified"){
+      higherRoles = ["SCF Pathfinder", "SCF Navigator", "SCF Pilot"];
+    }
+    let higherRoleName = "";
+    const hasHigherRole = member.roles.cache.some(role => {
+      if (higherRoles.includes(role.name)) {
+        higherRoleName = role.name;
+        return true;
+      }
+      return false;
+    });
+
+    console.log(`User already hasHigherRole: ${higherRoleName}`);
+    const thisRole = [roleName]
+    const hasThisRole = member.roles.cache.some(role => thisRole.includes(role.name));
+    if (hasThisRole) {
+      console.log(`User ${member.user.tag} already has the ${roleName} role.`);
+      return res.status(409).json({ error: `Conflict: User already has ${roleName} role.`, role: roleName });
+    }
+    if (hasHigherRole) {
+      console.log(`User ${member.user.tag} already has a higher role: ${higherRoleName}`);
+      return res.status(409).json({ error: 'Conflict: User already has a higher role.', role: higherRoleName });
+    }
+
+    const success = await updateUserRole(guild, userId, roleName);
+
+    if (success) {
+      console.log(`Role ${roleName} granted successfully to ${member.user.tag}`);
+      res.json({ message: `Role: ${roleName} granted successfully.` });
+    } else {
+      console.log(`Failed to grant role ${roleName} to ${member.user.tag}`);
+      res.status(500).json({ error: 'Failed to grant role.' });
+    }
+  } catch (error) {
+    console.error('Error processing request:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+app.listen(PORT, () => {
+  logger(`API Server running on port ${PORT}`);
+  console.log(`API Server running on port ${PORT}`);
+});
+
 //test the bot.
 client.on('messageCreate', async (message) => {
   if (!message.content.trim()) {
@@ -228,10 +421,11 @@ async function createVotingThread(
   // Create a public thread for voting
   const thread = await interaction.channel.threads.create({
     name: `Nomination: ${nominee.user.username} for ${nominateRole}`,
-    autoArchiveDuration: 60 * 24 * 5, // in minutes, 5 days.
+    autoArchiveDuration: 60,
     reason: `Nomination for ${nominee.user.username} to become a ${nominateRole}`,
   });
-  console.log('the thread is', JSON.stringify(thread))
+  logger('the thread for voting is being created')
+  logger(JSON.stringify(thread))
   // Send an initial message to the thread with voting instructions
   const voteButton = new ButtonBuilder()
     .setCustomId(`vote-yes:${nominee.id}:${nominateRole}`)
@@ -287,6 +481,7 @@ async function updateThreadVoteCount(thread: ThreadChannel, currentVoteCount: nu
     const baseName = thread.name.split('[')[0].trim();
     await thread.edit({ name: `${baseName} [Votes: ${currentVoteCount}]` });
   } else {
+    logger('There was an error, the thread.name was not set')
     console.error('Thread name is not set.');
   }
 }
@@ -296,8 +491,9 @@ async function grantRoleToNominee(guild: Guild, nomineeId: string, roleToAssignI
   const role = guild.roles.cache.get(roleToAssignId);
   if (role) {
     await nominee.roles.add(role);
-    console.log(`Role ${role.name} granted to user ${nominee.user.tag}.`);
+    logger(`Role ${role.name} granted to user ${nominee.user.tag}.`);
   } else {
+    logger(`Error granting Role ID ${roleToAssignId} not found in guild.`)
     console.error(`Role ID ${roleToAssignId} not found in guild.`);
   }
 }
@@ -320,6 +516,7 @@ async function processNominateCommand(interaction: CommandInteraction): Promise<
 
   // Prevent self-nomination
   if (nominator.id === nominee.id) {
+    logger(`${nominator.id}, ${nominator.user.tag} tried to nominate themselves!`)
     await interaction.reply({ content: 'You cannot nominate yourself.', ephemeral: true });
     return;
   }
@@ -327,32 +524,36 @@ async function processNominateCommand(interaction: CommandInteraction): Promise<
   // Perform role checks to ensure the nominator has the right to nominate.
   const nominatorRoles = checkNominatorRole(nominator);
   const nomineeRoles = checkNomineeRoles(nominee);
-  console.log(`Nominator ${nominator.user.tag} has roles: ${JSON.stringify(nominatorRoles)}`)
-  console.log(`Nominee ${nominee.user.tag} has roles: ${JSON.stringify(nomineeRoles)}`)
+  logger(`Nominator ${nominator.user.tag} has roles: ${JSON.stringify(nominatorRoles)}`)
+  logger(`Nominee ${nominee.user.tag} has roles: ${JSON.stringify(nomineeRoles)}`)
 
   // Determine the target role based on their current role
   let targetRole = determineNomineeVoteLevel(nomineeRoles);
   if (targetRole === null) {
-    await interaction.reply({ content: `User ${nominee.user.tag} does not have a role that can be nominated.`, ephemeral: true });
+    let msg = `User ${nominee.user.tag} does not have a role that can be nominated.`;
+    logger(targetRole ? targetRole : msg);
+    await interaction.reply({ content: msg, ephemeral: true });
     return;
   }
 
   // Ensure the nominee does not already have the target role.
   if (!targetRole || nominee.roles.cache.some(role => role.name === targetRole)) {
-    await interaction.reply({ content: `The user ${nominee.user.tag} already has the role ${targetRole} or cannot be promoted further.`, ephemeral: true });
+    let msg = `The user ${nominee.user.tag} already has the role ${targetRole} or cannot be promoted further.`;
+    logger(msg);
+    await interaction.reply({ content: msg, ephemeral: true });
     return;
   }
 
   // Check if the nominator has the permission to nominate someone for the target role.
-  console.log(targetRole)
+  logger(targetRole)
   if (!targetRole || (targetRole === "SCF Pilot" && !nominatorRoles.canNominatePilot) || (targetRole === "SCF Navigator" && !nominatorRoles.canNominateNavigator)) {
-    console.log(`Nominator ${nominator.user.tag} does not have permission to nominate ${nominee.user.tag} for role ${targetRole}`)
+    logger(`Nominator ${nominator.user.tag} does not have permission to nominate ${nominee.user.tag} for role ${targetRole}`)
     await interaction.reply({ content: `You do not have permission to nominate for the role: ${targetRole}`, ephemeral: true });
     return;
   }
 
   // Proceed to create the voting thread.
-  console.log("Creating Voting Thread")
+  logger("Creating Voting Thread")
   const thread = await createVotingThread(interaction, nominee, nominator, targetRole);
   if (!thread) {
     // If thread creation failed, the interaction reply is already handled in `createVotingThread`.
@@ -478,9 +679,14 @@ async function getRoleIdByName(guild: Guild, roleName: string): Promise<string |
 }
 
 async function updateUserRole(guild: Guild, userId: string, roleName: string): Promise<boolean> {
-  console.log(`trying to assign role [${roleName}] to userid [${userId}]`)
+  const member = await guild.members.fetch(userId);
+
+  logger(`trying to **assign role** [${roleName}] to userid [${userId}]`)
   try {
-    let previousRoleName = "";
+    let previousRoleName;
+    if (roleName == "SCF Pathfinder") {
+      previousRoleName = "SCF Verified"
+    }
     if (roleName == "SCF Navigator") {
       previousRoleName = "SCF Pathfinder"
     }
@@ -488,40 +694,90 @@ async function updateUserRole(guild: Guild, userId: string, roleName: string): P
       previousRoleName = "SCF Navigator"
     }
     const voterRoleName = "SCF Voter";
-    console.log(`previous role was ${previousRoleName}`)
+    logger(`previous role was ${previousRoleName}`)
     const roleId = await getRoleIdByName(guild, roleName);
     const voterRoleId = await getRoleIdByName(guild, voterRoleName);
-    const previousRoleId = await getRoleIdByName(guild, previousRoleName);
+    const previousRoleId = previousRoleName ? await getRoleIdByName(guild, previousRoleName): null;
     if (!voterRoleId) {
-      console.error(`Role ${voterRoleName} not found in guild.`);
+      let msg = `**ERROR:** Role ${voterRoleName} not found in guild.`
+      logger(msg)
+      console.error(msg);
       return false;
     }
     if (!roleId) {
-      console.error(`Role ${roleName} not found in guild.`);
+      let msg = `**ERROR:** Role ${roleName} not found in guild.`
+      logger(msg)
+      console.error(msg);
       return false;
     }
-    if (!previousRoleId) {
-      console.error(`Role ${previousRoleName} not found in guild.`);
+    if (!previousRoleId && previousRoleName) {
+      let msg = `**ERROR:** Role ${previousRoleName} not found in guild.`
+      logger(msg)
+      console.error(msg);
       return false;
     }
 
-    const member = await guild.members.fetch(userId);
 
     if (previousRoleName == "SCF Pathfinder") {
       await member.roles.add(voterRoleId, `${member.user.tag} has passed the vote to become a *SCF Voter*`)
-      console.log(`Role ${voterRoleName} assigned to user ${member.user.tag}.`);
-
+      logger(`Role ${voterRoleName} assigned to user ${member.user.tag}.`);
     }
+    if (!previousRoleId) {
+      await member.roles.add(roleId, `${member.user.tag} has earned the role ${roleName}`);
+      logger(`${member.user.tag} has earned the role ${roleName}`)
+      return true
+    }
+    if (previousRoleName === "SCF Verified") {
+      if (previousRoleName && previousRoleId) {
+        await member.roles.remove(previousRoleId, `${member.user.tag} has earned ${roleName}, and no longer needs the ${previousRoleName} role.`)
+        logger(`${previousRoleName} role has been removed from ${member.user.tag} because they have earned pathfinder`)
+      }
+      await member.roles.add(roleId, `${member.user.tag} has earned the role ${roleName}`);
+      logger(`${member.user.tag} has earned the role ${roleName}`)
+      return true
+    }
+
     await member.roles.remove(previousRoleId, `${member.user.tag} has passed the vote to become a ${roleName}, and no longer needs the ${previousRoleName} role.`)
-    console.log(`Role ${previousRoleName} has been removed from ${member.user.tag}.`)
+    logger(`Role ${previousRoleName} has been removed from ${member.user.tag}.`)
 
     await member.roles.add(roleId, `${member.user.tag} has passed the vote to become a ${roleName}`);
-    console.log(`Role ${roleName} assigned to user ${member.user.tag}.`);
+    logger(`Role ${roleName} assigned to user ${member.user.tag}.`);
 
     return true;
   } catch (error) {
+    logger(`Error assigning or removing role: ${error}`)
     console.error('Error assigning or removing role:', error);
     return false;
+  }
+}
+
+// a function that makes sure a user only has one of the 4 roles at a given time. if they have more than one then remove the others, and assign only the highest role they are entitled to.
+async function fixUserRoles(member: GuildMember) {
+  const scfRoles = ["SCF Verified", "SCF Pathfinder", "SCF Navigator", "SCF Pilot"];
+  const currentRoles = member.roles.cache.filter(role => scfRoles.includes(role.name));
+  logger(`${member.user.tag} roles are currently being fixed`)
+  if (currentRoles.size > 1) {
+    let highestRole = null;
+    let highestRoleIndex = -1;
+
+    // Find the highest role
+    for (const role of currentRoles.values()) {
+      const roleIndex = scfRoles.indexOf(role.name);
+      if (roleIndex > highestRoleIndex) {
+        highestRoleIndex = roleIndex;
+        highestRole = role;
+      }
+      logger(`${member.user.tag} has role: ${role.name} ${role.id}. highest role is ${highestRole?.name}`)
+
+    }
+
+    // Remove lower roles
+    for (const role of currentRoles.values()) {
+      if (scfRoles.indexOf(role.name) < highestRoleIndex) {
+        logger(`to fix roles for ${member.user.tag}, we will remove ${role.name}, ${role.id}`)
+        await member.roles.remove(role.id, `${member.user.tag} had an extra role ${role.name}, and should only have had ${highestRole?.name}`);
+      }
+    }
   }
 }
 
@@ -537,7 +793,7 @@ async function handleButtonInteraction(interaction: ButtonInteraction): Promise<
   if (!(await validateVoterRole(interaction, roleName))) return;
 
   if (await recordVote(interaction, nomineeId, roleName)) {
-    // await interaction.({ content: 'Your vote has been recorded!', ephemeral: true });
+    await interaction.reply({ content: 'Your vote has been recorded!', ephemeral: true });
   }
 }
 
@@ -640,8 +896,8 @@ async function updateVoteCountAndCheckRoleAssignment(
   const requiredVotesForNavigator = 3;
   // Update the vote count if within the 5-day limit
   if (currentVoteCount < requiredVotesForRole) {
-    console.log(currentVoteCount + "Current vote count")
-    console.log(requiredVotesForRole + "Required votes for role")
+    logger(currentVoteCount + "Current vote count")
+    logger(requiredVotesForRole + "Required votes for role")
     await interaction.reply({ content: 'Vote recorded but not enough votes to assign the role yet.', ephemeral: false });
     // Increment the vote count in the database
     await db.run(`
@@ -668,11 +924,29 @@ async function updateVoteCountAndCheckRoleAssignment(
       WHERE thread_id = ?
     `, thread.id);
     } else {
-      await interaction.reply({ content: 'Error: Unable to assign role, contact the admin', ephemeral: false });
+      await interaction.reply({ content: '**ERROR:** Unable to assign role, contact the admin', ephemeral: false });
     }
   }
 
 }
 
+async function logger(message: string) {
+  try {
+    let userId = ADMIN_USER
+    if (botIsLoggedIn) {
+      const user = await client.users.fetch(userId);
+      await user.send(message);
+      console.log('ADMIN LOG: ', message);
+    } else {
+      console.log('ADMIN LOG: ', message);
+    }
+  } catch (error) {
+    console.error('Error sending direct message:', error);
+  }
+}
+
+
 // Use the bot token from the environment variables
 client.login(process.env.DISCORD_BOT_TOKEN);
+
+logger("This is a test message")
